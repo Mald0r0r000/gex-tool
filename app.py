@@ -2,6 +2,9 @@ import streamlit as st
 import requests
 import pandas as pd
 import altair as alt
+import numpy as np
+from scipy.stats import norm
+from datetime import datetime
 
 # --- CONFIGURATION DE LA PAGE ---
 st.set_page_config(
@@ -30,6 +33,61 @@ st.markdown("""
 
 # --- FONCTIONS ---
 
+class GreeksCalculator:
+    def __init__(self, risk_free_rate=0.0):
+        self.r = risk_free_rate
+
+    def calculate(self, contract_data):
+        # 1. Parsing du nom (ex: BTC-27MAR26-80000-C)
+        try:
+            parts = contract_data['instrument_name'].split('-')
+            if len(parts) < 4: return contract_data
+            
+            date_str = parts[1]
+            strike = float(parts[2])
+            option_type = 'call' if parts[3] == 'C' else 'put'
+            expiry = datetime.strptime(date_str, "%d%b%y")
+        except:
+            return contract_data # On ignore si format bizarre
+
+        # 2. Variables Black-Scholes
+        S = contract_data.get('underlying_price', 0)
+        K = strike
+        sigma = contract_data.get('mark_iv', 0) / 100.0
+        
+        if S == 0 or sigma == 0: return contract_data
+
+        now = datetime.now()
+        T = (expiry - now).total_seconds() / (365 * 24 * 3600)
+        
+        if T <= 0: return contract_data
+
+        # 3. Calculs Mathématiques
+        d1 = (np.log(S / K) + (self.r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
+        d2 = d1 - sigma * np.sqrt(T)
+
+        if option_type == 'call':
+            delta = norm.cdf(d1)
+            theta_part = - (S * norm.pdf(d1) * sigma) / (2 * np.sqrt(T))
+            theta = theta_part - self.r * K * np.exp(-self.r * T) * norm.cdf(d2)
+        else:
+            delta = norm.cdf(d1) - 1
+            theta_part = - (S * norm.pdf(d1) * sigma) / (2 * np.sqrt(T))
+            theta = theta_part + self.r * K * np.exp(-self.r * T) * norm.cdf(-d2)
+
+        gamma = norm.pdf(d1) / (S * sigma * np.sqrt(T))
+        
+        # 4. Insertion des résultats
+        contract_data['greeks'] = {
+            "delta": round(delta, 5),
+            "gamma": round(gamma, 5),
+            "theta": round(theta / 365, 5) # Theta par jour
+        }
+        contract_data['delta'] = round(delta, 5) # Copie pour compatibilité
+        
+        return contract_data
+# --- FIN DU BLOC CALCULATEUR ---
+
 def get_deribit_data(currency='BTC'):
     # On ajoute un User-Agent pour éviter de se faire bloquer par Deribit
     headers = {
@@ -54,23 +112,31 @@ def get_deribit_data(currency='BTC'):
         return None, None
 
 def process_gex(spot, data):
-    strikes = {}
-    debug_log = [] # Pour voir pourquoi ça rejette les lignes
+    # --- CORRECTION 1 : Initialiser le calculateur ici ---
+    calculator = GreeksCalculator() 
     
+    strikes = {}
+    debug_log = [] 
+    
+    # On itère sur 'entry' (l'entrée brute de l'API)
     for i, entry in enumerate(data):
-        # On ne check que les 5 premières lignes pour le debug
         is_debug_sample = i < 5
+
+        # --- CORRECTION 2 : Passer 'entry' au calculateur ---
+        # On transforme la donnée brute 'entry' en donnée enrichie 'contract'
+        contract = calculator.calculate(entry)
         
-        instr = entry.get('instrument_name', 'UNKNOWN')
+        # Ensuite on utilise 'contract' (qui contient maintenant les greeks)
+        instr = contract.get('instrument_name', 'UNKNOWN')
         
         # Check 1: Open Interest
-        oi = entry.get('open_interest', 0)
+        oi = contract.get('open_interest', 0)
         if oi == 0:
             if is_debug_sample: debug_log.append(f"{instr}: Rejeté (OI=0)")
             continue
         
-        # Check 2: Greeks
-        greeks = entry.get('greeks')
+        # Check 2: Greeks (Maintenant ça va passer !)
+        greeks = contract.get('greeks')
         if not greeks:
             if is_debug_sample: debug_log.append(f"{instr}: Rejeté (Pas de Greeks)")
             continue
@@ -82,7 +148,13 @@ def process_gex(spot, data):
             
         try:
             strike = float(parts[2])
-            opt_type = parts[3]
+            opt_type = parts[3] # 'C' ou 'P' (attention Deribit met 'C' ou 'P' dans le nom, mais verifiez votre parsing)
+            
+            # Note: Dans le nom c'est souvent "C" ou "P", mais vérifions
+            # Le parser a déjà extrait le type en 'call'/'put' dans l'objet, 
+            # mais ici vous re-parsez le nom manuellement. Gardons votre logique :
+            type_char = parts[3] 
+
             gamma = greeks.get('gamma', 0) or 0
             
             # GEX Calc
@@ -91,7 +163,7 @@ def process_gex(spot, data):
             if strike not in strikes:
                 strikes[strike] = {'total_gex': 0}
             
-            if opt_type == 'C':
+            if type_char == 'C':
                 strikes[strike]['total_gex'] += gex_val
             else:
                 strikes[strike]['total_gex'] -= gex_val
@@ -113,7 +185,11 @@ def process_gex(spot, data):
     put_wall = df['total_gex'].idxmin()
     
     subset = df[(df.index > spot * 0.85) & (df.index < spot * 1.15)]
-    zero_gamma = subset['total_gex'].abs().idxmin() if not subset.empty else spot
+    # Petit fix de sécurité si subset vide
+    if not subset.empty:
+        zero_gamma = subset['total_gex'].abs().idxmin()
+    else:
+        zero_gamma = spot
     
     return df, call_wall, put_wall, zero_gamma, debug_log
 
