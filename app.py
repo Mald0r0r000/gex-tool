@@ -60,6 +60,9 @@ class GreeksCalculator:
         now = datetime.now()
         T = (expiry - now).total_seconds() / (365 * 24 * 3600)
         
+        # Calcul des jours restants pour le filtrage
+        days_to_expiry = (expiry - now).days
+        
         if T <= 0: return contract_data
 
         # 3. Calculs Mathématiques
@@ -81,15 +84,15 @@ class GreeksCalculator:
         contract_data['greeks'] = {
             "delta": round(delta, 5),
             "gamma": round(gamma, 5),
-            "theta": round(theta / 365, 5) # Theta par jour
+            "theta": round(theta / 365, 5) 
         }
-        contract_data['delta'] = round(delta, 5) # Copie pour compatibilité
+        contract_data['delta'] = round(delta, 5) 
+        contract_data['dte_days'] = days_to_expiry # On stocke le DTE pour le filtre
         
         return contract_data
 # --- FIN DU BLOC CALCULATEUR ---
 
 def get_deribit_data(currency='BTC'):
-    # On ajoute un User-Agent pour éviter de se faire bloquer par Deribit
     headers = {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
@@ -111,43 +114,44 @@ def get_deribit_data(currency='BTC'):
         st.error(f"Erreur technique API: {e}")
         return None, None
 
-def process_gex(spot, data):
-    # Initialiser le calculateur ici
+def process_gex(spot, data, dte_limit):
+    # Initialiser le calculateur
     calculator = GreeksCalculator() 
     
     strikes = {}
     debug_log = [] 
     
-    # On itère sur 'entry' (l'entrée brute de l'API)
     for i, entry in enumerate(data):
         is_debug_sample = i < 5
 
-        # On transforme la donnée brute 'entry' en donnée enrichie 'contract'
         contract = calculator.calculate(entry)
-        
-        # Ensuite on utilise 'contract' (qui contient maintenant les greeks)
         instr = contract.get('instrument_name', 'UNKNOWN')
         
-        # Check 1: Open Interest
+        # --- FILTRE 1 : DTE (NOUVEAU) ---
+        dte = contract.get('dte_days', 9999)
+        if dte > dte_limit:
+            # On ignore silencieusement les contrats trop lointains pour ne pas polluer les logs
+            continue
+
+        # --- FILTRE 2 : Open Interest ---
         oi = contract.get('open_interest', 0)
         if oi == 0:
             if is_debug_sample: debug_log.append(f"{instr}: Rejeté (OI=0)")
             continue
         
-        # Check 2: Greeks
+        # --- FILTRE 3 : Greeks ---
         greeks = contract.get('greeks')
         if not greeks:
             if is_debug_sample: debug_log.append(f"{instr}: Rejeté (Pas de Greeks)")
             continue
             
-        # Check 3: Format Nom
         parts = instr.split('-')
         if len(parts) < 4: 
             continue
             
         try:
             strike = float(parts[2])
-            opt_type = parts[3] # 'C' ou 'P'
+            opt_type = parts[3] 
             
             gamma = greeks.get('gamma', 0) or 0
             
@@ -178,14 +182,13 @@ def process_gex(spot, data):
     call_wall = df['total_gex'].idxmax()
     put_wall = df['total_gex'].idxmin()
     
-    # --- LOGIQUE INTELLIGENTE POUR LE ZERO GAMMA (INTERPOLATION) ---
+    # --- LOGIQUE INTELLIGENTE POUR LE ZERO GAMMA ---
     subset = df[(df.index > spot * 0.85) & (df.index < spot * 1.15)]
     neg_gex = subset[subset['total_gex'] < 0]
     pos_gex = subset[subset['total_gex'] > 0]
     
-    zero_gamma = spot # Valeur par défaut
+    zero_gamma = spot 
     
-    # On cherche le vrai point de bascule entre le rouge et le vert
     if not neg_gex.empty and not pos_gex.empty:
         idx_neg = neg_gex.index.max()
         val_neg = neg_gex.loc[idx_neg, 'total_gex']
@@ -195,7 +198,6 @@ def process_gex(spot, data):
             idx_pos = candidates_pos.index.min()
             val_pos = candidates_pos.loc[idx_pos, 'total_gex']
             
-            # Interpolation
             numerator = abs(val_neg)
             denominator = abs(val_neg) + val_pos
             if denominator != 0:
@@ -206,7 +208,6 @@ def process_gex(spot, data):
         else:
              zero_gamma = subset['total_gex'].abs().idxmin()
     else:
-        # Fallback si pas de transition nette
         if not subset.empty:
             zero_gamma = subset['total_gex'].abs().idxmin()
         else:
@@ -218,7 +219,11 @@ def process_gex(spot, data):
 
 st.title("🛠️ GEX Debugger")
 
-if st.button("LANCER LE SCAN AVEC DEBUG"):
+# Ajout du slider DTE
+st.markdown("### ⚙️ Paramètres")
+dte_limit = st.slider("📅 Filtrer les expirations (Jours max)", min_value=1, max_value=365, value=45, step=1, help="Exclut les options qui expirent dans plus de X jours.")
+
+if st.button("LANCER LE SCAN AVEC FILTRES"):
     spot, raw_data = get_deribit_data('BTC')
     
     if spot and raw_data:
@@ -228,34 +233,38 @@ if st.button("LANCER LE SCAN AVEC DEBUG"):
         with st.expander("🔍 VOIR LA DONNÉE BRUTE (Premier contrat)"):
             st.json(raw_data[0])
             
-        df, cw, pw, zg, logs = process_gex(spot, raw_data)
+        # On passe dte_limit à la fonction
+        df, cw, pw, zg, logs = process_gex(spot, raw_data, dte_limit)
         
         with st.expander("⚠️ LOGS DE FILTRAGE"):
             st.write(logs)
             
         if not df.empty:
-            st.metric("Spot", f"${spot:,.0f}")
+            st.markdown("---")
+            st.metric("Spot Price", f"${spot:,.0f}")
+            
             col1, col2, col3 = st.columns(3)
-            col1.metric("Call Wall", f"${cw:,.0f}")
-            col2.metric("Put Wall", f"${pw:,.0f}")
-            col3.metric("Zero Gamma (Flip)", f"${zg:,.0f}")
+            col1.metric("🔴 Call Wall", f"${cw:,.0f}")
+            col2.metric("🟢 Put Wall", f"${pw:,.0f}")
+            col3.metric("⚖️ Zero Gamma", f"${zg:,.0f}")
             
             # Chart
             df_chart = df[(df.index > spot * 0.8) & (df.index < spot * 1.2)].reset_index()
             chart = alt.Chart(df_chart).mark_bar().encode(
-                x='Strike',
+                x=alt.X('Strike', axis=alt.Axis(format='$,f')),
                 y='total_gex',
-                color=alt.condition(alt.datum.total_gex > 0, alt.value('green'), alt.value('red')),
+                color=alt.condition(alt.datum.total_gex > 0, alt.value('#00C853'), alt.value('#D50000')),
                 tooltip=['Strike', 'total_gex']
             ).interactive()
             st.altair_chart(chart, use_container_width=True)
             
-            # --- MODIFICATION ICI : Code propre sans point-virgule ---
+            # Code propre sans point-virgule
             code = f"""float call_wall = {cw}
 float put_wall = {pw}
 float zero_gamma = {zg}"""
+            st.markdown("### 📋 Code pour PineScript")
             st.code(code, language='pine')
         else:
-            st.error("Aucune donnée après filtrage.")
+            st.error("Aucune donnée après filtrage. Essayez d'augmenter la limite de jours.")
     else:
         st.error("Impossible de joindre Deribit.")
