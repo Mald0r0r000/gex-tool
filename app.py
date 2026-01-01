@@ -112,7 +112,7 @@ def get_deribit_data(currency='BTC'):
         return None, None
 
 def process_gex(spot, data):
-    # --- CORRECTION 1 : Initialiser le calculateur ici ---
+    # Initialiser le calculateur ici
     calculator = GreeksCalculator() 
     
     strikes = {}
@@ -122,7 +122,6 @@ def process_gex(spot, data):
     for i, entry in enumerate(data):
         is_debug_sample = i < 5
 
-        # --- CORRECTION 2 : Passer 'entry' au calculateur ---
         # On transforme la donnée brute 'entry' en donnée enrichie 'contract'
         contract = calculator.calculate(entry)
         
@@ -135,7 +134,7 @@ def process_gex(spot, data):
             if is_debug_sample: debug_log.append(f"{instr}: Rejeté (OI=0)")
             continue
         
-        # Check 2: Greeks (Maintenant ça va passer !)
+        # Check 2: Greeks
         greeks = contract.get('greeks')
         if not greeks:
             if is_debug_sample: debug_log.append(f"{instr}: Rejeté (Pas de Greeks)")
@@ -148,13 +147,8 @@ def process_gex(spot, data):
             
         try:
             strike = float(parts[2])
-            opt_type = parts[3] # 'C' ou 'P' (attention Deribit met 'C' ou 'P' dans le nom, mais verifiez votre parsing)
+            opt_type = parts[3] # 'C' ou 'P'
             
-            # Note: Dans le nom c'est souvent "C" ou "P", mais vérifions
-            # Le parser a déjà extrait le type en 'call'/'put' dans l'objet, 
-            # mais ici vous re-parsez le nom manuellement. Gardons votre logique :
-            type_char = parts[3] 
-
             gamma = greeks.get('gamma', 0) or 0
             
             # GEX Calc
@@ -163,7 +157,7 @@ def process_gex(spot, data):
             if strike not in strikes:
                 strikes[strike] = {'total_gex': 0}
             
-            if type_char == 'C':
+            if opt_type == 'C':
                 strikes[strike]['total_gex'] += gex_val
             else:
                 strikes[strike]['total_gex'] -= gex_val
@@ -184,13 +178,40 @@ def process_gex(spot, data):
     call_wall = df['total_gex'].idxmax()
     put_wall = df['total_gex'].idxmin()
     
+    # --- LOGIQUE INTELLIGENTE POUR LE ZERO GAMMA (INTERPOLATION) ---
     subset = df[(df.index > spot * 0.85) & (df.index < spot * 1.15)]
-    # Petit fix de sécurité si subset vide
-    if not subset.empty:
-        zero_gamma = subset['total_gex'].abs().idxmin()
-    else:
-        zero_gamma = spot
+    neg_gex = subset[subset['total_gex'] < 0]
+    pos_gex = subset[subset['total_gex'] > 0]
     
+    zero_gamma = spot # Valeur par défaut
+    
+    # On cherche le vrai point de bascule entre le rouge et le vert
+    if not neg_gex.empty and not pos_gex.empty:
+        idx_neg = neg_gex.index.max()
+        val_neg = neg_gex.loc[idx_neg, 'total_gex']
+        
+        candidates_pos = pos_gex[pos_gex.index > idx_neg]
+        if not candidates_pos.empty:
+            idx_pos = candidates_pos.index.min()
+            val_pos = candidates_pos.loc[idx_pos, 'total_gex']
+            
+            # Interpolation
+            numerator = abs(val_neg)
+            denominator = abs(val_neg) + val_pos
+            if denominator != 0:
+                ratio = numerator / denominator
+                zero_gamma = idx_neg + (idx_pos - idx_neg) * ratio
+            else:
+                zero_gamma = (idx_neg + idx_pos) / 2
+        else:
+             zero_gamma = subset['total_gex'].abs().idxmin()
+    else:
+        # Fallback si pas de transition nette
+        if not subset.empty:
+            zero_gamma = subset['total_gex'].abs().idxmin()
+        else:
+            zero_gamma = spot
+
     return df, call_wall, put_wall, zero_gamma, debug_log
 
 # --- INTERFACE ---
@@ -214,21 +235,24 @@ if st.button("LANCER LE SCAN AVEC DEBUG"):
             
         if not df.empty:
             st.metric("Spot", f"${spot:,.0f}")
-            st.metric("Call Wall", f"${cw:,.0f}")
-            st.metric("Put Wall", f"${pw:,.0f}")
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Call Wall", f"${cw:,.0f}")
+            col2.metric("Put Wall", f"${pw:,.0f}")
+            col3.metric("Zero Gamma (Flip)", f"${zg:,.0f}")
             
             # Chart
             df_chart = df[(df.index > spot * 0.8) & (df.index < spot * 1.2)].reset_index()
             chart = alt.Chart(df_chart).mark_bar().encode(
                 x='Strike',
                 y='total_gex',
-                color=alt.condition(alt.datum.total_gex > 0, alt.value('green'), alt.value('red'))
-            )
+                color=alt.condition(alt.datum.total_gex > 0, alt.value('green'), alt.value('red')),
+                tooltip=['Strike', 'total_gex']
+            ).interactive()
             st.altair_chart(chart, use_container_width=True)
             
-            # Code
-            code = f"""float call_wall = {cw}\nfloat put_wall = {pw}\nfloat zero_gamma = {zg}"""
-            st.code(code)
+            # Code pour copier coller vers Pinescript
+            code = f"""float call_wall = {cw};\nfloat put_wall = {pw};\nfloat zero_gamma = {zg};"""
+            st.code(code, language='c')
         else:
             st.error("Aucune donnée après filtrage.")
     else:
