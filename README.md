@@ -6,17 +6,17 @@ Cet indicateur GEX (Gamma Exposure) vous permet de visualiser ces niveaux de liq
 
 Ce que l'indicateur affiche :
 
-[b]Call Wall [/b](Résistance Majeure) : Le niveau où les Market Makers sont massivement exposés à la vente. C'est souvent un plafond de verre difficile à percer du premier coup car la volatilité y est "écrasée".
+Call Wall (Résistance Majeure) : Le niveau où les Market Makers sont massivement exposés à la vente. C'est souvent un plafond de verre difficile à percer du premier coup car la volatilité y est "écrasée".
 
-[b]Put Wall[/b] (Support Majeur) : Le niveau de protection ultime. À l'approche de ce prix, les Market Makers doivent acheter pour se couvrir, créant un "coussin" de rebond naturel.
+Put Wall (Support Majeur) : Le niveau de protection ultime. À l'approche de ce prix, les Market Makers doivent acheter pour se couvrir, créant un "coussin" de rebond naturel.
 
-[b]Zero Gamma[/b] (Le "Flip") : Le niveau le plus important.
+Zero Gamma (Le "Flip") : Le niveau le plus important.
 
         Au-dessus : Zone de Gamma Positif. Le marché est stable, les corrections sont achetées. (Tendance haussière lente).
 
         En dessous : Zone de Gamma Négatif. La volatilité explose. Les baisses entraînent des ventes paniques. (Zone de danger).
 
-[b]La Technologie[/b] : Les données proviennent de Deribit (le plus gros exchange d'options crypto). Un algorithme Python (Black-Scholes) calcule l'exposition nette sur chaque strike pour déterminer ces niveaux avec précision.
+La Technologie : Les données proviennent de Deribit (le plus gros exchange d'options crypto). Un algorithme Python (Black-Scholes) calcule l'exposition nette sur chaque strike pour déterminer ces niveaux avec précision.
 
 🔗 Lien du Scanner (Données Brutes) : https://gex-tool-maldor0r.streamlit.app/
 
