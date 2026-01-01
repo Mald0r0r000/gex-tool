@@ -80,10 +80,52 @@ def process_gex(spot, data):
             strikes[strike]['total_gex'] += gex_val
             strikes[strike]['call_gex'] += gex_val
         else:
-            strikes[strike]['total_gex'] -= gex_val # Puts sont neg gamma
-            strikes[strike]['put_gex'] -= gex_val
+def process_gex(spot, data):
+    strikes = {}
+    
+    for entry in data:
+        # Sécurité 1: Si pas d'Open Interest, on zappe
+        if entry.get('open_interest', 0) == 0: continue
+        
+        # Sécurité 2: Si pas de données 'greeks' (la cause de ton erreur), on zappe
+        greeks = entry.get('greeks')
+        if not greeks: continue
+        
+        instr = entry['instrument_name']
+        parts = instr.split('-')
+        
+        # Sécurité 3: Vérifier que le format du nom est bon (ex: BTC-29DEC23-40000-C)
+        if len(parts) < 4: continue
+            
+        try:
+            strike = float(parts[2])
+            opt_type = parts[3]
+            
+            # Récupération sécurisée du Gamma
+            gamma = greeks.get('gamma', 0) or 0
+            oi = entry['open_interest']
+            
+            # Formule GEX ($ exposure per 1% move) / en Millions
+            gex_val = (gamma * oi * (spot ** 2) / 100) / 1_000_000 
+            
+            if strike not in strikes:
+                strikes[strike] = {'total_gex': 0, 'call_gex': 0, 'put_gex': 0}
+                
+            if opt_type == 'C':
+                strikes[strike]['total_gex'] += gex_val
+                strikes[strike]['call_gex'] += gex_val
+            else:
+                strikes[strike]['total_gex'] -= gex_val
+                strikes[strike]['put_gex'] -= gex_val
+                
+        except (ValueError, IndexError):
+            continue # Si une donnée est bizarre, on ignore la ligne
 
-    # Conversion en DataFrame pour affichage
+    # Si aucune donnée n'a été traitée (cas extrême), on renvoie des valeurs par défaut pour éviter le crash
+    if not strikes:
+        return pd.DataFrame(), spot, spot, spot
+
+    # Conversion en DataFrame
     df = pd.DataFrame.from_dict(strikes, orient='index')
     df.index.name = 'Strike'
     df = df.sort_index()
@@ -96,10 +138,12 @@ def process_gex(spot, data):
     put_wall = df['total_gex'].idxmin()
     
     # Zero Gamma (Flip)
-    # On cherche le strike le plus proche du prix actuel avec le GEX absolu le plus faible
-    # (Zone de transition)
     subset = df[(df.index > spot * 0.85) & (df.index < spot * 1.15)]
-    zero_gamma = subset['total_gex'].abs().idxmin()
+    # Sécurité si le subset est vide
+    if not subset.empty:
+        zero_gamma = subset['total_gex'].abs().idxmin()
+    else:
+        zero_gamma = spot # Fallback au prix actuel
     
     return df, call_wall, put_wall, zero_gamma
 
