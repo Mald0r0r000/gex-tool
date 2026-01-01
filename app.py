@@ -224,7 +224,7 @@ if st.button("LANCER LE SCAN AVEC DEBUG"):
     if spot and raw_data:
         st.success(f"Connexion réussie ! {len(raw_data)} contrats récupérés.")
         
-        # AFFICHER LA DONNÉE BRUTE (C'est ça qui nous intéresse)
+        # AFFICHER LA DONNÉE BRUTE
         with st.expander("🔍 VOIR LA DONNÉE BRUTE (Premier contrat)"):
             st.json(raw_data[0])
             
@@ -250,9 +250,11 @@ if st.button("LANCER LE SCAN AVEC DEBUG"):
             ).interactive()
             st.altair_chart(chart, use_container_width=True)
             
-            # Code pour copier coller vers Pinescript
-            code = f"""float call_wall = {cw};\nfloat put_wall = {pw};\nfloat zero_gamma = {zg};"""
-            st.code(code, language='c')
+            # --- MODIFICATION ICI : Code propre sans point-virgule ---
+            code = f"""float call_wall = {cw}
+float put_wall = {pw}
+float zero_gamma = {zg}"""
+            st.code(code, language='pine')
         else:
             st.error("Aucune donnée après filtrage.")
     else:
